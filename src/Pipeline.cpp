@@ -1,80 +1,108 @@
 #include "Pipeline.h"
 
-#include <thread>
-#include <cctype>
 #include <algorithm>
+#include <unordered_map>
+#include <thread>
+#include <mutex>
 
-void Pipeline::lowering(std::vector<TextBloc>& blocs)
+void Pipeline::lowering(std::string& bloc)
 {
-    std::vector<TextBloc>::iterator it;
-    do
-    {
-        // chercher un bloc à l'étape 'lowering' (par son index)
-        it = std::find_if(blocs.begin(), blocs.end(), [](const TextBloc& b){
-            if(b.step == Step::LOWERING)
-                return true;
-            return false;
-        });
-        int index = std::distance(this->text.begin(), it);
-
-        // faire l'opération sur le bloc cible de manière safe
-        // et le faire passer à l'étape supérieure
-        this->mut[index].lock();
-        for(auto& c : blocs[index].str)
+    for(auto& c : bloc)
             c = std::tolower(c);
-        blocs[index].step = Step::TOKENIZING;
-        this->mut[index].unlock();
-
-        // boucler tant qu'il reste des blocs à l'étape
-        // lowering ou inférieur
-    } while(it != blocs.end());
 }
 
-void Pipeline::tokenizing(std::vector<TextBloc>& blocs)
+void Pipeline::tokenizing(std::string& bloc)
 {
-
-}
-
-void Pipeline::deletingPunc(std::vector<TextBloc>& blocs)
-{
-
-}
-
-void Pipeline::numbersToLetters(std::vector<TextBloc>& blocs)
-{
-
-}
-
-Pipeline::Pipeline(std::vector<std::string> input)
-{
-    this->mut = new std::mutex[this->text.size()];
-
-    // // on associe chaque étape à une fonction membre dédiée
-    // this->op[Step::LOWERING] = &Pipeline::lowering;
-    // this->op[Step::TOKENIZING] = &Pipeline::tokenizing;
-    // this->op[Step::DELETING_PUNC] = &Pipeline::deletingPunc;
-    // this->op[Step::NUMBERS_TO_LETTERS] = &Pipeline::numbersToLetters;
-
-    // on ajoute chaque bloc de texte avec son étape
-    for(auto& e : input)
-        this->text.push_back({e, Step::LOWERING});
-        
-    for(int i = 0 ; i < Pipeline::NB_OF_STEPS ; ++i)
+    size_t start_pos = 0;
+    while ((start_pos = bloc.find("'", start_pos)) != std::string::npos)
     {
-        this->th[i] = std::thread(
-            // this->op[this->text[i].step],
-            &Pipeline::lowering,
-            this,
-            std::ref(this->text)
-        );
+        bloc.replace(start_pos, 1, "'|");
+        start_pos += 2;
+    }
+    start_pos = 0;
+    while ((start_pos = bloc.find(" ", start_pos)) != std::string::npos)
+    {
+        bloc.replace(start_pos, 1, "|");
+        start_pos += 1;
     }
 
-    for(auto& t : this->th)
-        t.join();
-        
+    // std::replace(bloc.begin(), bloc.end(), "'", "'|");
+    // std::replace(bloc.begin(), bloc.end(), " ", "|");
+}
+
+void Pipeline::deletingPunc(std::string& bloc)
+{
+    const char punc[] = {':', ',', '!', '?', ';', '.'};
+    std::remove_if(bloc.begin(), bloc.end(), [punc](char& c){
+        return std::find(std::begin(punc), std::end(punc), c);
+    });
+}
+
+void Pipeline::numbersToLetters(std::string& bloc)
+{
+    // std::unordered_map<std::string,std::string> map = {
+    //     {"0", "zéro"}, {"1", "un"}, {"2", "deux"},
+    //     {"3", "trois"}, {"4", "quatre"}, {"5", "cinq"},
+    //     {"6", "six"}, {"7", "sept"}, {"8", "huit"}, {"9", "neuf"}
+    // };
+
+    // char digitFound;
+
+    // auto pred = [map,&digitFound](char& c){
+    //     for(const auto& pair : map)
+    //         if(c == pair.first)
+    //         {
+    //             digitFound = c;
+    //             return true;
+    //         }         
+    //     return false;
+    // };
+
+    // std::replace_if(bloc.begin(), bloc.end(), pred, map[digitFound]);
+}
+
+void Pipeline::callbackFn(Job* actual, Job* next)
+{
+    unsigned c = 0;
+    while(c != this->nbOfBlocs)
+    {
+        std::unique_lock<std::mutex> lck(actual->mut);
+        actual->cond_var.wait(lck, [actual]{return !actual->work.empty();});
+        std::string bloc = actual->work.front();
+        actual->work.pop();
+        actual->op(this, bloc);
+        if(!next)
+        {
+            std::unique_lock<std::mutex> ul(next->mut);
+            next->work.push(bloc);
+            next->cond_var.notify_one();
+        }
+        ++c;
+    }
+}
+
+Pipeline::Pipeline(std::vector<std::string>& input)
+{
+    this->nbOfBlocs = input.size();
+
+    // on associe chaque étape à une fonction membre dédiée
+    this->jobs[Step::LOWERING].op = &Pipeline::lowering;
+    this->jobs[Step::TOKENIZING].op = &Pipeline::tokenizing;
+    this->jobs[Step::DELETING_PUNC].op = &Pipeline::deletingPunc;
+    this->jobs[Step::NUMBERS_TO_LETTERS].op = &Pipeline::numbersToLetters;
+
+    for(auto& str : input)
+    {
+        std::unique_lock<std::mutex> lck(this->jobs[Step::LOWERING].mut);
+        this->jobs[Step::LOWERING].work.push(str);
+        this->jobs[Step::LOWERING].cond_var.notify_one();
+    }
+
+    for(auto& j : this->jobs)
+        j.th.join();
 }
 
 Pipeline::~Pipeline()
 {
-    delete[] this->mut;
+    ;
 }

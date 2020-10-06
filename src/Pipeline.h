@@ -5,6 +5,8 @@
 #include <thread>
 #include <functional>
 #include <mutex>
+#include <condition_variable>
+#include <queue>
 
 enum Step
 {
@@ -14,31 +16,34 @@ enum Step
     NUMBERS_TO_LETTERS
 };
 
-struct TextBloc
+class Pipeline;
+
+struct Job
 {
-	std::string str;
-	Step step;
+	std::queue<std::string> work;
+    // Pipeline* en paramètre 1 pour le 'this' implicite
+	std::function<void(Pipeline*, std::string&)> op;
+    std::thread th;
+    std::mutex mut;
+    std::condition_variable cond_var;
 };
 
 class Pipeline
 {
     static const int NB_OF_STEPS = 4;
-    
-    // Pipeline* en paramètre 1 pour le 'this' implicite
-    // std::function<void(Pipeline*, std::vector<TextBloc>&)> op[Pipeline::NB_OF_STEPS];
-    std::vector<TextBloc> text;
-	std::mutex* mut;
-	
 
-    std::thread th[Pipeline::NB_OF_STEPS];
+    unsigned nbOfBlocs;
+    Job jobs[Pipeline::NB_OF_STEPS];
 
-    void lowering(std::vector<TextBloc>& blocs);
-    void tokenizing(std::vector<TextBloc>& blocs);
-    void deletingPunc(std::vector<TextBloc>& blocs);
-    void numbersToLetters(std::vector<TextBloc>& blocs);
+    void callbackFn(Job* actual, Job* next);
+
+    void lowering(std::string& bloc);
+    void tokenizing(std::string& bloc);
+    void deletingPunc(std::string& bloc);
+    void numbersToLetters(std::string& bloc);
 
   public:
-    Pipeline(std::vector<std::string> input);
+    Pipeline(std::vector<std::string>& input);
     ~Pipeline();
 };
 
